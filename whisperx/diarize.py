@@ -1,4 +1,5 @@
 import numpy as np
+from functools import lru_cache
 import pandas as pd
 from pyannote.audio import Pipeline
 from typing import Optional, Union
@@ -6,6 +7,13 @@ import torch
 
 from whisperx.audio import load_audio, SAMPLE_RATE
 from whisperx.types import TranscriptionResult, AlignedTranscriptionResult
+
+
+@lru_cache(maxsize=None)
+def _load_diarization_pipeline(model_config: str, device_str: str, auth_token: Optional[str]):
+    pipeline = Pipeline.from_pretrained(model_config, use_auth_token=auth_token)
+    device = torch.device(device_str)
+    return pipeline.to(device)
 
 
 class DiarizationPipeline:
@@ -18,7 +26,7 @@ class DiarizationPipeline:
         if isinstance(device, str):
             device = torch.device(device)
         model_config = model_name or "pyannote/speaker-diarization-3.1"
-        self.model = Pipeline.from_pretrained(model_config, use_auth_token=use_auth_token).to(device)
+        self.model = _load_diarization_pipeline(model_config, str(device), use_auth_token)
 
     def __call__(
         self,
