@@ -102,35 +102,46 @@ def assign_word_speakers(
         Updated transcript_result with speaker assignments and optionally embeddings
     """
     transcript_segments = transcript_result["segments"]
+
+    if diarize_df.empty:
+        if speaker_embeddings is not None:
+            transcript_result["speaker_embeddings"] = speaker_embeddings
+        return transcript_result
+
+    ordered_df = diarize_df.sort_values("start", kind="stable").reset_index(drop=True)
+    starts = ordered_df['start'].to_numpy()
+    ends = ordered_df['end'].to_numpy()
+    speakers = ordered_df['speaker'].to_numpy()
+
+    def dominant_speaker(start_time: float, end_time: float) -> Optional[str]:
+        overlaps = np.minimum(ends, end_time) - np.maximum(starts, start_time)
+        if overlaps.size == 0:
+            return None
+
+        positive_mask = overlaps > 0
+        if np.any(positive_mask):
+            totals: dict[str, float] = {}
+            for speaker, overlap in zip(speakers[positive_mask], overlaps[positive_mask]):
+                totals[speaker] = totals.get(speaker, 0.0) + float(overlap)
+            return max(totals.items(), key=lambda item: item[1])[0]
+
+        if fill_nearest:
+            nearest_idx = int(np.argmax(overlaps))
+            return speakers[nearest_idx]
+
+        return None
+
     for seg in transcript_segments:
-        # assign speaker to segment (if any)
-        diarize_df['intersection'] = np.minimum(diarize_df['end'], seg['end']) - np.maximum(diarize_df['start'], seg['start'])
-        diarize_df['union'] = np.maximum(diarize_df['end'], seg['end']) - np.minimum(diarize_df['start'], seg['start'])
-        # remove no hit, otherwise we look for closest (even negative intersection...)
-        if not fill_nearest:
-            dia_tmp = diarize_df[diarize_df['intersection'] > 0]
-        else:
-            dia_tmp = diarize_df
-        if len(dia_tmp) > 0:
-            # sum over speakers
-            speaker = dia_tmp.groupby("speaker")["intersection"].sum().sort_values(ascending=False).index[0]
+        speaker = dominant_speaker(seg['start'], seg['end'])
+        if speaker is not None:
             seg["speaker"] = speaker
-        
-        # assign speaker to words
+
         if 'words' in seg:
             for word in seg['words']:
-                if 'start' in word:
-                    diarize_df['intersection'] = np.minimum(diarize_df['end'], word['end']) - np.maximum(diarize_df['start'], word['start'])
-                    diarize_df['union'] = np.maximum(diarize_df['end'], word['end']) - np.minimum(diarize_df['start'], word['start'])
-                    # remove no hit
-                    if not fill_nearest:
-                        dia_tmp = diarize_df[diarize_df['intersection'] > 0]
-                    else:
-                        dia_tmp = diarize_df
-                    if len(dia_tmp) > 0:
-                        # sum over speakers
-                        speaker = dia_tmp.groupby("speaker")["intersection"].sum().sort_values(ascending=False).index[0]
-                        word["speaker"] = speaker
+                if 'start' in word and 'end' in word:
+                    word_speaker = dominant_speaker(word['start'], word['end'])
+                    if word_speaker is not None:
+                        word["speaker"] = word_speaker
 
     # Add speaker embeddings to the result if provided
     if speaker_embeddings is not None:
