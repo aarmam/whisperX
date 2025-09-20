@@ -29,3 +29,23 @@ def load_audio(*args, **kwargs):
 def assign_word_speakers(*args, **kwargs):
     diarize = _lazy_import("diarize")
     return diarize.assign_word_speakers(*args, **kwargs)
+
+
+def process_long_audio_streaming(*args, **kwargs):
+    streaming = _lazy_import("streaming")
+    return streaming.process_long_audio_streaming(*args, **kwargs)
+
+
+def setup_mixed_precision(*args, **kwargs):
+    acceleration = _lazy_import("acceleration")
+    return acceleration.setup_mixed_precision(*args, **kwargs)
+
+
+def optimize_torch_settings(*args, **kwargs):
+    acceleration = _lazy_import("acceleration")
+    return acceleration.optimize_torch_settings(*args, **kwargs)
+
+
+def get_optimal_batch_size(*args, **kwargs):
+    acceleration = _lazy_import("acceleration")
+    return acceleration.get_optimal_batch_size(*args, **kwargs)
