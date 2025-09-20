@@ -21,6 +21,8 @@ N_SAMPLES_PER_TOKEN = HOP_LENGTH * 2  # the initial convolutions has stride 2
 FRAMES_PER_SECOND = exact_div(SAMPLE_RATE, HOP_LENGTH)  # 10ms per audio frame
 TOKENS_PER_SECOND = exact_div(SAMPLE_RATE, N_SAMPLES_PER_TOKEN)  # 20ms per audio token
 
+_HANN_WINDOW_CACHE: dict[str, torch.Tensor] = {}
+
 
 def load_audio(file: str, sr: int = SAMPLE_RATE) -> np.ndarray:
     """
@@ -143,10 +145,14 @@ def log_mel_spectrogram(
         audio = torch.from_numpy(audio)
 
     if device is not None:
-        audio = audio.to(device)
+        device = torch.device(device)
+        if audio.device != device:
+            audio = audio.to(device)
+    else:
+        device = audio.device
     if padding > 0:
         audio = F.pad(audio, (0, padding))
-    window = torch.hann_window(N_FFT).to(audio.device)
+    window = _get_hann_window(device)
     stft = torch.stft(audio, N_FFT, HOP_LENGTH, window=window, return_complex=True)
     magnitudes = stft[..., :-1].abs() ** 2
 
@@ -157,3 +163,13 @@ def log_mel_spectrogram(
     log_spec = torch.maximum(log_spec, log_spec.max() - 8.0)
     log_spec = (log_spec + 4.0) / 4.0
     return log_spec
+
+
+def _get_hann_window(device: torch.device) -> torch.Tensor:
+    key = repr(device)
+    window = _HANN_WINDOW_CACHE.get(key)
+    if window is not None and window.device == device:
+        return window
+    window = torch.hann_window(N_FFT, dtype=torch.float32, device=device)
+    _HANN_WINDOW_CACHE[key] = window
+    return window
