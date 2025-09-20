@@ -13,8 +13,12 @@ from pyannote.core import Segment
 
 from whisperx.diarize import Segment as SegmentX
 from whisperx.vads.vad import Vad
+from functools import lru_cache
 
 
+from functools import lru_cache
+
+@lru_cache(maxsize=2)
 def load_vad_model(device, vad_onset=0.500, vad_offset=0.363, use_auth_token=None, model_fp=None):
     model_dir = torch.hub._get_torch_home()
 
@@ -38,10 +42,11 @@ def load_vad_model(device, vad_onset=0.500, vad_offset=0.363, use_auth_token=Non
     model_bytes = open(model_fp, "rb").read()
 
     vad_model = Model.from_pretrained(model_fp, use_auth_token=use_auth_token)
+    # Optimize hyperparameters for faster processing
     hyperparameters = {"onset": vad_onset,
                     "offset": vad_offset,
                     "min_duration_on": 0.1,
-                    "min_duration_off": 0.1}
+                    "min_duration_off": 0.05}  # Reduced for faster processing
     vad_pipeline = VoiceActivitySegmentation(segmentation=vad_model, device=torch.device(device))
     vad_pipeline.instantiate(hyperparameters)
 
