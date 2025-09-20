@@ -117,9 +117,11 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
         warnings.warn("--max_line_count has no effect without --max_line_width")
     writer_args = {arg: args.pop(arg) for arg in word_options}
 
+    audio_inputs = args.pop("audio")
+
     # Part 1: VAD & ASR Loop
     results = []
-    tmp_results = []
+    waveform_cache_required = diarize or (not no_align and len(audio_inputs) == 1)
     # model = load_model(model_name, device=device, download_root=model_dir)
     model = load_model(
         model_name,
@@ -140,7 +142,7 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
         threads=faster_whisper_threads,
     )
 
-    for audio_path in args.pop("audio"):
+    for audio_path in audio_inputs:
         audio = load_audio(audio_path)
         # >> VAD & ASR
         print(">>Performing transcription...")
@@ -151,7 +153,14 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
             print_progress=print_progress,
             verbose=verbose,
         )
-        results.append((result, audio_path))
+        cached_audio = audio if waveform_cache_required else None
+        results.append({
+            "result": result,
+            "audio_path": audio_path,
+            "audio": cached_audio,
+        })
+        if not waveform_cache_required:
+            del audio
 
     # Unload Whisper and VAD
     del model
@@ -160,19 +169,14 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
 
     # Part 2: Align Loop
     if not no_align:
-        tmp_results = results
-        results = []
         align_model, align_metadata = load_align_model(
             align_language, device, model_name=align_model
         )
-        for result, audio_path in tmp_results:
+        for entry in results:
+            result = entry["result"]
+            audio_path = entry["audio_path"]
+            input_audio = entry["audio"] if entry["audio"] is not None else audio_path
             # >> Align
-            if len(tmp_results) > 1:
-                input_audio = audio_path
-            else:
-                # lazily load audio from part 1
-                input_audio = audio
-
             if align_model is not None and len(result["segments"]) > 0:
                 if result.get("language", "en") != align_metadata["language"]:
                     # load new language
@@ -194,7 +198,9 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
                     print_progress=print_progress,
                 )
 
-            results.append((result, audio_path))
+            entry["result"] = result
+            if not diarize:
+                entry["audio"] = None
 
         # Unload align model
         del align_model
@@ -207,14 +213,15 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
             print(
                 "Warning, no --hf_token used, needs to be saved in environment variable, otherwise will throw error loading diarization model..."
             )
-        tmp_results = results
         print(">>Performing diarization...")
         print(">>Using model:", diarize_model_name)
-        results = []
         diarize_model = DiarizationPipeline(model_name=diarize_model_name, use_auth_token=hf_token, device=device)
-        for result, input_audio_path in tmp_results:
+        for entry in results:
+            result = entry["result"]
+            cached_audio = entry["audio"]
+            diarization_input = cached_audio if cached_audio is not None else entry["audio_path"]
             diarize_result = diarize_model(
-                input_audio_path, 
+                diarization_input,
                 min_speakers=min_speakers, 
                 max_speakers=max_speakers, 
                 return_embeddings=return_speaker_embeddings
@@ -227,8 +234,11 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
                 speaker_embeddings = None
 
             result = assign_word_speakers(diarize_segments, result, speaker_embeddings)
-            results.append((result, input_audio_path))
+            entry["result"] = result
+            entry["audio"] = None
     # >> Write
-    for result, audio_path in results:
+    for entry in results:
+        result = entry["result"]
+        audio_path = entry["audio_path"]
         result["language"] = align_language
         writer(result, audio_path, writer_args)
