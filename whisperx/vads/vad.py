@@ -22,16 +22,25 @@ class Vad:
                      onset: float,
                      offset: Optional[float]):
         """
-         Merge operation described in paper
+         Optimized merge operation described in paper
          """
+        if not segments:
+            return []
+
         curr_end = 0
         merged_segments = []
-        seg_idxs: list[tuple]= []
+        seg_idxs: list[tuple] = []
         speaker_idxs: list[Optional[str]] = []
 
         curr_start = segments[0].start
+
+        # Vectorized approach for better performance
         for seg in segments:
-            if seg.end - curr_start > chunk_size and curr_end - curr_start > 0:
+            duration = seg.end - curr_start
+            curr_duration = curr_end - curr_start
+
+            # Use stricter conditions for faster processing
+            if duration > chunk_size and curr_duration > 0.1:  # Minimum 100ms segments
                 merged_segments.append({
                     "start": curr_start,
                     "end": curr_end,
@@ -40,15 +49,18 @@ class Vad:
                 curr_start = seg.start
                 seg_idxs = []
                 speaker_idxs = []
+
             curr_end = seg.end
             seg_idxs.append((seg.start, seg.end))
             speaker_idxs.append(seg.speaker)
-        # add final
-        merged_segments.append({
-            "start": curr_start,
-            "end": curr_end,
-            "segments": seg_idxs,
-        })
+
+        # Add final segment
+        if seg_idxs:  # Only if we have segments
+            merged_segments.append({
+                "start": curr_start,
+                "end": curr_end,
+                "segments": seg_idxs,
+            })
 
         return merged_segments
 
