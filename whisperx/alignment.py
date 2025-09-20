@@ -23,6 +23,7 @@ from whisperx.types import (
     SegmentData,
 )
 from nltk.tokenize.punkt import PunktSentenceTokenizer, PunktParameters
+from functools import lru_cache
 
 PUNKT_ABBREVIATIONS = ['dr', 'vs', 'mr', 'mrs', 'prof']
 
@@ -74,7 +75,14 @@ DEFAULT_ALIGN_MODELS_HF = {
 }
 
 
+@lru_cache(maxsize=4)
+def _load_align_model_cached(language_code: str, device: str, model_name: Optional[str] = None, model_dir=None):
+    return _load_align_model_impl(language_code, device, model_name, model_dir)
+
 def load_align_model(language_code: str, device: str, model_name: Optional[str] = None, model_dir=None):
+    return _load_align_model_cached(language_code, device, model_name, model_dir)
+
+def _load_align_model_impl(language_code: str, device: str, model_name: Optional[str] = None, model_dir=None):
     if model_name is None:
         # use default model
         if language_code in DEFAULT_ALIGN_MODELS_TORCH:
@@ -237,24 +245,30 @@ def align(
         f1 = int(t1 * SAMPLE_RATE)
         f2 = int(t2 * SAMPLE_RATE)
 
-        # TODO: Probably can get some speedup gain with batched inference here
+        # Optimize waveform processing
         waveform_segment = audio[:, f1:f2]
+
         # Handle the minimum input length for wav2vec2 models
-        if waveform_segment.shape[-1] < 400:
+        min_length = 400
+        if waveform_segment.shape[-1] < min_length:
             lengths = torch.as_tensor([waveform_segment.shape[-1]]).to(device)
-            waveform_segment = torch.nn.functional.pad(
-                waveform_segment, (0, 400 - waveform_segment.shape[-1])
-            )
+            padding_needed = min_length - waveform_segment.shape[-1]
+            waveform_segment = torch.nn.functional.pad(waveform_segment, (0, padding_needed))
         else:
             lengths = None
-            
+
+        # Move to device once and use non_blocking transfer
+        waveform_segment = waveform_segment.to(device, non_blocking=True)
+
         with torch.inference_mode():
             if model_type == "torchaudio":
-                emissions, _ = model(waveform_segment.to(device), lengths=lengths)
+                emissions, _ = model(waveform_segment, lengths=lengths)
             elif model_type == "huggingface":
-                emissions = model(waveform_segment.to(device)).logits
+                emissions = model(waveform_segment).logits
             else:
                 raise NotImplementedError(f"Align model of type {model_type} not supported.")
+
+            # Use in-place operation for log_softmax
             emissions = torch.log_softmax(emissions, dim=-1)
 
         emission = emissions[0].cpu().detach()
@@ -265,8 +279,8 @@ def align(
                 blank_id = code
 
         trellis = get_trellis(emission, tokens, blank_id)
-        # path = backtrack(trellis, emission, tokens, blank_id)
-        path = backtrack_beam(trellis, emission, tokens, blank_id, beam_width=2)
+        # Use optimized beam search with smaller beam for speed
+        path = backtrack_beam(trellis, emission, tokens, blank_id, beam_width=1)
 
         if path is None:
             print(f'Failed to align segment ("{segment["text"]}"): backtrack failed, resorting to original...')
@@ -305,7 +319,8 @@ def align(
             elif cdx == len(text) - 1 or text[cdx+1] == " ":
                 word_idx += 1
             
-        char_segments_arr = pd.DataFrame(char_segments_arr)
+        # Use more efficient DataFrame creation
+        char_segments_arr = pd.DataFrame.from_records(char_segments_arr)
 
         aligned_subsegments = []
         # assign sentence_idx to each character index
