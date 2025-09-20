@@ -122,7 +122,8 @@ class FasterWhisperPipeline(Pipeline):
         self.preset_language = language
         self.suppress_numerals = suppress_numerals
         self._batch_size = kwargs.pop("batch_size", None)
-        self._num_workers = 1
+        self._num_workers = kwargs.pop("num_workers", None)
+        self._prefetch_factor = kwargs.pop("prefetch_factor", 2)
         self._preprocess_params, self._forward_params, self._postprocess_params = self._sanitize_parameters(**kwargs)
         self.call_count = 0
         self.framework = framework
@@ -195,8 +196,20 @@ class FasterWhisperPipeline(Pipeline):
 
         def stack(items):
             return {'inputs': torch.stack([x['inputs'] for x in items])}
-        dataloader = torch.utils.data.DataLoader(dataset, num_workers=num_workers, batch_size=batch_size, collate_fn=stack)
-        model_iterator = PipelineIterator(dataloader, self.forward, forward_params, loader_batch_size=batch_size)
+        effective_batch_size = batch_size if batch_size not in [None, 0] else 1
+        worker_count = num_workers if num_workers is not None else 0
+        pin_memory = getattr(self.device, "type", "cpu") == "cuda"
+        dataloader_kwargs = {
+            "num_workers": worker_count,
+            "batch_size": effective_batch_size,
+            "collate_fn": stack,
+            "pin_memory": pin_memory,
+        }
+        if worker_count > 0:
+            dataloader_kwargs["prefetch_factor"] = self._prefetch_factor
+            dataloader_kwargs["persistent_workers"] = True
+        dataloader = torch.utils.data.DataLoader(dataset, **dataloader_kwargs)
+        model_iterator = PipelineIterator(dataloader, self.forward, forward_params, loader_batch_size=effective_batch_size)
         final_iterator = PipelineIterator(model_iterator, self.postprocess, postprocess_params)
         return final_iterator
 
@@ -204,7 +217,7 @@ class FasterWhisperPipeline(Pipeline):
         self,
         audio: Union[str, np.ndarray],
         batch_size: Optional[int] = None,
-        num_workers=0,
+        num_workers: Optional[int] = None,
         language: Optional[str] = None,
         task: Optional[str] = None,
         chunk_size=30,
@@ -267,7 +280,22 @@ class FasterWhisperPipeline(Pipeline):
             self.options = replace(self.options, suppress_tokens=new_suppressed_tokens)
 
         segments: List[SingleSegment] = []
-        batch_size = batch_size or self._batch_size
+        if num_workers is None:
+            if self._num_workers is not None:
+                num_workers = self._num_workers
+            else:
+                cpu_count = os.cpu_count() or 1
+                max_workers = max(0, cpu_count - 1)
+                if max_workers == 0:
+                    num_workers = 0
+                else:
+                    preferred = 4 if getattr(self.device, "type", "cpu") == "cuda" else 8
+                    num_workers = min(preferred, max_workers)
+        num_workers = max(0, num_workers)
+        self._num_workers = num_workers
+        batch_size = batch_size or self._batch_size or 1
+        self._batch_size = batch_size
+        self._prefetch_factor = max(2, min(4, batch_size))
         total_segments = len(vad_segments)
         for idx, out in enumerate(self.__call__(data(audio, vad_segments), batch_size=batch_size, num_workers=num_workers)):
             if print_progress:
@@ -275,7 +303,7 @@ class FasterWhisperPipeline(Pipeline):
                 percent_complete = base_progress / 2 if combined_progress else base_progress
                 print(f"Progress: {percent_complete:.2f}%...")
             text = out['text']
-            if batch_size in [0, 1, None]:
+            if batch_size <= 1:
                 text = text[0]
             if verbose:
                 print(f"Transcript: [{round(vad_segments[idx]['start'], 3)} --> {round(vad_segments[idx]['end'], 3)}] {text}")
