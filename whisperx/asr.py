@@ -355,6 +355,7 @@ def load_model(
     download_root: Optional[str] = None,
     local_files_only=False,
     threads=4,
+    quantization: Optional[str] = None,
 ) -> FasterWhisperPipeline:
     """Load a Whisper model for inference.
     Args:
@@ -375,22 +376,37 @@ def load_model(
     if whisper_arch.endswith(".en"):
         language = "en"
 
-    model = model or WhisperModel(whisper_arch,
-                         device=device,
-                         device_index=device_index,
-                         compute_type=compute_type,
-                         download_root=download_root,
-                         local_files_only=local_files_only,
-                         cpu_threads=threads)
+    # Auto-select optimal compute type based on device and quantization
+    if quantization == "int8" or (device == "cpu" and compute_type == "float16"):
+        compute_type = "int8"
+    elif quantization == "int8_float16":
+        compute_type = "int8_float16"
+    elif device == "cuda" and compute_type == "float32":
+        # Use float16 on GPU by default for better performance
+        compute_type = "float16"
+
+    model = model or WhisperModel(
+        whisper_arch,
+        device=device,
+        device_index=device_index,
+        compute_type=compute_type,
+        download_root=download_root,
+        local_files_only=local_files_only,
+        cpu_threads=threads
+    )
     if language is not None:
         tokenizer = Tokenizer(model.hf_tokenizer, model.model.is_multilingual, task=task, language=language)
     else:
         print("No language specified, language will be first be detected for each audio file (increases inference time).")
         tokenizer = None
 
+    # Optimize default parameters for speed based on compute type
+    beam_size = 3 if compute_type in ["int8", "int8_float16"] else 5
+    best_of = 3 if compute_type in ["int8", "int8_float16"] else 5
+
     default_asr_options =  {
-        "beam_size": 5,
-        "best_of": 5,
+        "beam_size": beam_size,
+        "best_of": best_of,
         "patience": 1,
         "length_penalty": 1,
         "repetition_penalty": 1,
