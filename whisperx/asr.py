@@ -14,6 +14,13 @@ from transformers.pipelines.pt_utils import PipelineIterator
 from whisperx.audio import N_SAMPLES, SAMPLE_RATE, load_audio, log_mel_spectrogram
 from whisperx.types import SingleSegment, TranscriptionResult
 from whisperx.vads import Vad, Silero, Pyannote
+from whisperx.acceleration import (
+    setup_mixed_precision,
+    optimize_torch_settings,
+    get_optimal_batch_size,
+    enable_compilation_optimizations,
+    MemoryOptimizer
+)
 
 
 def find_numeral_symbol_tokens(tokenizer):
@@ -114,6 +121,7 @@ class FasterWhisperPipeline(Pipeline):
         framework="pt",
         language: Optional[str] = None,
         suppress_numerals: bool = False,
+        enable_optimizations: bool = True,
         **kwargs,
     ):
         self.model = model
@@ -142,6 +150,14 @@ class FasterWhisperPipeline(Pipeline):
         super(Pipeline, self).__init__()
         self.vad_model = vad
         self._vad_params = vad_params
+
+        # Setup hardware optimizations
+        if enable_optimizations:
+            optimize_torch_settings(self.device)
+            self.use_mixed_precision, self.precision_dtype = setup_mixed_precision(self.device)
+        else:
+            self.use_mixed_precision = False
+            self.precision_dtype = None
 
     def _sanitize_parameters(self, **kwargs):
         preprocess_kwargs = {}
@@ -467,7 +483,17 @@ def load_model(
         else:
             raise ValueError(f"Invalid vad_method: {vad_method}")
 
-    return FasterWhisperPipeline(
+    # Apply hardware optimizations
+    optimize_torch_settings(device, threads)
+
+    # Get optimal batch size if not specified
+    if asr_options is None or "batch_size" not in asr_options:
+        optimal_batch_size = get_optimal_batch_size(device, whisper_arch)
+        print(f"Using optimal batch size: {optimal_batch_size}")
+    else:
+        optimal_batch_size = None
+
+    pipeline = FasterWhisperPipeline(
         model=model,
         vad=vad_model,
         options=default_asr_options,
@@ -475,4 +501,8 @@ def load_model(
         language=language,
         suppress_numerals=suppress_numerals,
         vad_params=default_vad_options,
+        enable_optimizations=True,
+        batch_size=optimal_batch_size,
     )
+
+    return pipeline
