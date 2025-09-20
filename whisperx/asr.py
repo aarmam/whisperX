@@ -151,15 +151,29 @@ class FasterWhisperPipeline(Pipeline):
     def preprocess(self, audio):
         audio = audio['inputs']
         model_n_mels = self.model.feat_kwargs.get("feature_size")
+        mel_device = None
+        if torch.cuda.is_available() and getattr(self.device, "type", "cpu") == "cuda":
+            mel_device = self.device
         features = log_mel_spectrogram(
             audio,
             n_mels=model_n_mels if model_n_mels is not None else 80,
             padding=N_SAMPLES - audio.shape[0],
+            device=mel_device,
         )
+        if isinstance(features, torch.Tensor) and features.device.type == "cuda":
+            features = features.to("cpu", non_blocking=True)
+        if isinstance(features, torch.Tensor):
+            features = features.contiguous()
         return {'inputs': features}
 
     def _forward(self, model_inputs):
-        outputs = self.model.generate_segment_batched(model_inputs['inputs'], self.tokenizer, self.options)
+        features = model_inputs['inputs']
+        if isinstance(features, torch.Tensor):
+            features = features.detach()
+            if features.device.type != "cpu":
+                features = features.cpu()
+            features = features.numpy()
+        outputs = self.model.generate_segment_batched(features, self.tokenizer, self.options)
         return {'text': outputs}
 
     def postprocess(self, model_outputs):
