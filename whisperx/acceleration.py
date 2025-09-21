@@ -68,8 +68,12 @@ def optimize_torch_settings(device: Union[str, torch.device], threads: Optional[
         # Use TensorFloat-32 (TF32) on Ampere+ GPUs
         torch.set_float32_matmul_precision("medium")
 
-    # Enable JIT optimizations
-    torch.jit.set_bailout_depth(20)
+    # Enable JIT optimizations (if available)
+    try:
+        if hasattr(torch.jit, 'set_bailout_depth'):
+            torch.jit.set_bailout_depth(20)
+    except AttributeError:
+        pass  # Skip if not available in this PyTorch version
 
     # CUDA optimizations
     if device.type == "cuda" and torch.cuda.is_available():
@@ -81,7 +85,7 @@ def optimize_torch_settings(device: Union[str, torch.device], threads: Optional[
         try:
             torch.cuda.empty_cache()
             # Use memory efficient attention if available
-            if hasattr(torch.nn.functional, "scaled_dot_product_attention"):
+            if hasattr(torch.backends.cuda, "enable_flash_sdp"):
                 torch.backends.cuda.enable_flash_sdp(True)
         except Exception:
             pass

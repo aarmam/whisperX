@@ -153,8 +153,13 @@ class FasterWhisperPipeline(Pipeline):
 
         # Setup hardware optimizations
         if enable_optimizations:
-            optimize_torch_settings(self.device)
-            self.use_mixed_precision, self.precision_dtype = setup_mixed_precision(self.device)
+            try:
+                optimize_torch_settings(self.device)
+                self.use_mixed_precision, self.precision_dtype = setup_mixed_precision(self.device)
+            except Exception as e:
+                print(f"Warning: Could not enable all optimizations: {e}")
+                self.use_mixed_precision = False
+                self.precision_dtype = None
         else:
             self.use_mixed_precision = False
             self.precision_dtype = None
@@ -484,14 +489,19 @@ def load_model(
             raise ValueError(f"Invalid vad_method: {vad_method}")
 
     # Apply hardware optimizations
-    optimize_torch_settings(device, threads)
+    try:
+        optimize_torch_settings(device, threads)
+    except Exception as e:
+        print(f"Warning: Could not apply all hardware optimizations: {e}")
 
     # Get optimal batch size if not specified
-    if asr_options is None or "batch_size" not in asr_options:
-        optimal_batch_size = get_optimal_batch_size(device, whisper_arch)
-        print(f"Using optimal batch size: {optimal_batch_size}")
-    else:
-        optimal_batch_size = None
+    optimal_batch_size = None
+    try:
+        if asr_options is None or "batch_size" not in asr_options:
+            optimal_batch_size = get_optimal_batch_size(device, whisper_arch)
+            print(f"Using optimal batch size: {optimal_batch_size}")
+    except Exception as e:
+        print(f"Warning: Could not determine optimal batch size: {e}")
 
     pipeline = FasterWhisperPipeline(
         model=model,
