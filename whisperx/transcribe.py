@@ -53,6 +53,7 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
     vad_offset: float = args.pop("vad_offset")
 
     chunk_size: int = args.pop("chunk_size")
+    align_batch_size: int = args.pop("align_batch_size")
 
     diarize: bool = args.pop("diarize")
     min_speakers: int = args.pop("min_speakers")
@@ -192,6 +193,7 @@ def transcribe_task(args: dict, parser: argparse.ArgumentParser):
                     interpolate_method=interpolate_method,
                     return_char_alignments=return_char_alignments,
                     print_progress=print_progress,
+                    batch_size=align_batch_size,
                 )
 
             results.append((result, audio_path))
