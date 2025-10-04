@@ -460,22 +460,56 @@ source: https://pytorch.org/tutorials/intermediate/forced_alignment_with_torchau
 
 
 def get_trellis(emission, tokens, blank_id=0):
+    """
+    Compute CTC trellis for forced alignment using vectorized operations.
+    Optimized to reduce Python loop overhead and leverage PyTorch's efficient operations.
+    """
     num_frame = emission.size(0)
     num_tokens = len(tokens)
 
-    trellis = torch.zeros((num_frame, num_tokens))
+    # Pre-allocate trellis on same device as emission for faster access
+    trellis = torch.zeros((num_frame, num_tokens), device=emission.device, dtype=emission.dtype)
     trellis[1:, 0] = torch.cumsum(emission[1:, blank_id], 0)
     trellis[0, 1:] = -float("inf")
     trellis[-num_tokens + 1:, 0] = float("inf")
 
-    for t in range(num_frame - 1):
-        trellis[t + 1, 1:] = torch.maximum(
-            # Score for staying at the same token
-            trellis[t, 1:] + emission[t, blank_id],
-            # Score for changing to the next token
-            # trellis[t, :-1] + emission[t, tokens[1:]],
-            trellis[t, :-1] + get_wildcard_emission(emission[t], tokens[1:], blank_id),
+    # Pre-compute wildcard emissions for all frames at once (vectorized)
+    # This avoids calling get_wildcard_emission in the loop
+    tokens_tensor = torch.tensor(tokens[1:], device=emission.device, dtype=torch.long)
+    wildcard_mask = (tokens_tensor == -1)
+
+    # Vectorized emission extraction for all frames
+    # Shape: (num_frame, num_tokens-1)
+    regular_scores = emission[:, tokens_tensor.clamp(min=0).long()]
+
+    # For wildcard positions, compute max valid score (excluding blank)
+    if wildcard_mask.any():
+        max_valid_scores = emission.clone()
+        max_valid_scores[:, blank_id] = float('-inf')
+        max_valid_scores = max_valid_scores.max(dim=1, keepdim=True)[0]
+        # Broadcast max_valid_scores to match shape
+        wildcard_emissions = torch.where(
+            wildcard_mask.unsqueeze(0),
+            max_valid_scores.expand(-1, len(tokens_tensor)),
+            regular_scores
         )
+    else:
+        wildcard_emissions = regular_scores
+
+    # Optimized dynamic programming loop
+    # Extract blank emission column once for reuse
+    blank_emissions = emission[:, blank_id]
+
+    for t in range(num_frame - 1):
+        # Stay at same token: previous + blank
+        stay_scores = trellis[t, 1:] + blank_emissions[t]
+
+        # Change to next token: previous token + emission for new token
+        change_scores = trellis[t, :-1] + wildcard_emissions[t]
+
+        # Take maximum of stay vs change
+        trellis[t + 1, 1:] = torch.maximum(stay_scores, change_scores)
+
     return trellis
 
 
